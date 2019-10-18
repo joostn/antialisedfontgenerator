@@ -1,0 +1,294 @@
+<html><head>
+
+<script>
+function generate()
+{
+  var canvas=document.getElementById("canvas");
+  var context = canvas.getContext("2d");
+  context.save();
+  var characterstring=document.getElementById("characters").value;
+  characterstring += " "; // always include space
+  var fontname=document.getElementById("fontname").value;
+  var fontheight=document.getElementById("fontheight").value;
+  var bitsperpixel=document.getElementById("bitsperpixel").value;
+  fontheight -= 0;
+  bitsperpixel -= 0;
+  var font=fontheight+"px "+fontname;
+  context.font=font;
+
+  var chars=[];
+  var had={};
+  var totalwidth=0;
+  var maxwidth=0;
+  var numchars=0;
+  for(var i=0; i < characterstring.length; i++)
+  {
+    var c=characterstring.charAt(i);
+    var charcode=characterstring.charCodeAt(i);
+    if(charcode < 128)
+    {
+      if(!had[charcode])
+      {
+        had[charcode]=true;
+        var meas=context.measureText(c);
+        var textwidth=meas.width;
+        textwidth=Math.ceil(textwidth);
+        var rec={
+          charcode: charcode,
+          width: textwidth,
+          char: c,
+        };
+        chars.push(rec);
+        totalwidth += textwidth;
+        numchars++;
+        if(textwidth > maxwidth) maxwidth=textwidth;
+      }
+    }
+  }
+  context.restore();
+  delete context;
+
+  if(numchars > 0)
+  {
+    var numpixels=totalwidth * fontheight;
+    var numlines=Math.ceil(Math.sqrt(numpixels)/fontheight);
+    var linewidth=Math.ceil(totalwidth/numlines);
+    if(linewidth < maxwidth) linewidth=maxwidth;
+    // increase the width of the canvas until the characters fit in numlines:
+    while(true)
+    {
+      var currentline=0;
+      var currentleft=0;
+      for(var i=0; i < numchars; i++)
+      {
+        var rec=chars[i];
+        if( (currentleft > 0) && (currentleft+rec.width > linewidth) )
+        {
+          ++currentline;
+          currentleft=0;
+        }
+        var top=currentline*fontheight;
+        rec.top=top;
+        rec.line=currentline;
+        rec.left=currentleft;
+        currentleft += rec.width;
+      }      
+      if(currentline < numlines) break;
+      // try again:
+      linewidth++;
+    }
+
+    canvas.width=linewidth;
+    canvas.height=numlines*fontheight;
+    var context = canvas.getContext("2d");
+    context.save();
+    context.fillStyle="rgba(0,0,0)";
+    context.fillRect(0,0,canvas.width,canvas.height);
+    context.fillStyle="rgb(255,255,255)";
+    context.textBaseline="bottom";
+    context.font=font;
+    context.textAlign="left";
+    for(var i=0; i < numchars; i++)
+    {
+      var rec=chars[i];
+      context.save();
+      context.beginPath();
+      context.rect(rec.left, rec.top, rec.width, fontheight);
+      context.closePath();
+      context.clip();
+      context.fillText(rec.char, rec.left, rec.top+fontheight, rec.width);
+      context.restore();
+    }
+    context.restore();
+  }
+
+  var bitmapstruct=getBitmapData(canvas, bitsperpixel);
+  var fontstruct=generateFontStruct(bitmapstruct,chars, fontheight);
+  document.getElementById("result").value=fontstruct;
+
+}
+
+function getBitmapData(canvas, bitsperpixel)
+{
+  var numvalues=1 << bitsperpixel;
+  var context = canvas.getContext("2d");
+  context.save();
+  var sourceImageData = context.getImageData(0, 0, canvas.width, canvas.height);  
+  if(sourceImageData.data.length != canvas.width * canvas.height * 4)
+  {
+    throw new Error("Assertion failed");
+  }
+  var destPixelArray=[];
+  var destImageData = context.createImageData(sourceImageData);  
+  var index=0;
+  for(var y=0; y < canvas.height; y++)
+  {    
+    var mask=0x100;
+    var destpixel=0;
+    for(var x=0; x < canvas.width; x++)
+    {
+      var red=sourceImageData.data[index];
+      var green=sourceImageData.data[index+1];
+      var blue=sourceImageData.data[index+2];
+      var alpha=sourceImageData.data[index+3];
+      var grey=(red+green+blue)*alpha;
+      grey /= 195075.0; // scale to 1.0
+      var ourvalue=Math.round(grey*(numvalues-1));
+      if(ourvalue < 0) ourvalue=0;
+      if(ourvalue >= numvalues) ourvalue=numvalues-1;
+/*
+if(y < 48)      
+{
+  ourvalue=(Math.round(x / 5))&(numvalues-1);      
+  if(y & 16) ourvalue=numvalues-1-ourvalue;
+}
+*/
+      var v=255*ourvalue/(numvalues-1);
+      destImageData.data[index++]=v;
+      destImageData.data[index++]=v;
+      destImageData.data[index++]=v;
+      destImageData.data[index++]=255;
+      var ourmask=numvalues;
+      for(var i=0; i < bitsperpixel; i++)
+      {
+        if(mask == 1)
+        {
+          destPixelArray.push(destpixel);
+          mask=0x100;
+          destpixel=0;
+        }
+        mask >>= 1;
+        ourmask >>= 1;
+        if(ourvalue & ourmask) destpixel |= mask;
+      }
+    }
+    if(mask != 0x100)
+    {
+      destPixelArray.push(destpixel);      
+    }
+  }
+  context.putImageData(destImageData, 0, 0);
+  context.restore();
+  var bitmapstruct=generateBitmapStruct(destPixelArray, canvas.width, canvas.height, bitsperpixel);
+  return bitmapstruct;
+}
+
+function hexChar(v)
+{
+  return "\\x"+(v+0x10000).toString(16).substr(-2);
+}
+
+function array2HexString(ar)
+{
+  var result="\"";
+  for(var i=0; i < ar.length; i++)
+  {
+    if( (i > 0) && ( (i%20) == 0) )
+    {
+      result += "\"\n\"";
+    }
+    result += hexChar(ar[i]);
+  }
+  result += "\"";
+  return result;
+}
+
+function generateBitmapStruct(pixelarray, width, height, bitsperpixel)
+{
+  var result="jnuc::GreyscaleBitmap( /* width= */ "+width+", /* height= */ "+height+", /* bitsperpixel= */ "+bitsperpixel+",\n  // bitmap data: "+pixelarray.length+" bytes\n";
+  result += indentString(array2HexString(pixelarray),2);
+  result += "\n)";
+  return result;
+}
+
+function numBitsForValue(v)
+{
+  var numbits=0;
+  while(v > 0)
+  {
+    ++numbits;
+    v >>= 1;
+  }
+  return numbits;
+}
+
+function generateFontStruct(bitmapstruct, chars, fontheight)
+{
+  if( (chars.length < 1) || (fontheight > 255) )
+  {
+    throw new Error("Assertion failed");
+  }
+
+  var maxwidth=0;
+  var maxleft=0;
+  var maxline=0;
+  var mincharcode=255;
+  var maxcharcode=0;
+  var code2rec={};
+  for(var i=0; i < chars.length; i++)
+  {
+    var rec=chars[i];
+    maxleft=Math.max(maxleft, rec.left);
+    maxwidth=Math.max(maxwidth, rec.width);
+    maxline=Math.max(maxline, rec.line);
+    mincharcode=Math.min(mincharcode, rec.charcode);
+    maxcharcode=Math.max(maxcharcode, rec.charcode);
+    code2rec[rec.charcode]=rec;
+  }
+  var numbitsforwidth=numBitsForValue(maxwidth);
+  var numbitsforx=numBitsForValue(maxleft);
+  var numbitsfory=numBitsForValue(maxline);
+  var numbytesperchar=((numbitsforwidth+numbitsforx+numbitsfory-1)>>3) + 1;
+  var descriptorarray=[];
+  descriptorarray.push(mincharcode);
+  descriptorarray.push(maxcharcode-mincharcode+1);
+  descriptorarray.push(numbytesperchar);
+  descriptorarray.push(numbitsforwidth);
+  descriptorarray.push(numbitsforx);
+  descriptorarray.push(fontheight);
+  for(var charcode=mincharcode; charcode <= maxcharcode; charcode++)
+  {
+    var data=0;
+    if(charcode in code2rec)
+    {
+      var rec=code2rec[charcode];
+      data =  rec.width;
+      data |= (rec.left << numbitsforwidth);
+      data |= (rec.line << ( numbitsforwidth+numbitsforx));
+    }
+    for(var i=0; i < numbytesperchar; i++)
+    {
+      descriptorarray.push(data & 0xff);
+      data >>= 8;
+    }
+  }
+  var result="jnuc::Font(\n  // descriptor: "+descriptorarray.length+" bytes\n"+indentString(array2HexString(descriptorarray),2);
+  result += ",\n";
+  result += indentString(bitmapstruct,2);
+  result += "\n)";
+  return result;
+}
+
+function indentString(str, num)
+{
+  var indentstr="";
+  for(var i=0; i < num; i++)
+  {
+    indentstr += " ";
+  }
+  return indentstr+str.replace(/\n/g,"\n"+indentstr);
+}
+</script>
+
+</head>
+<body>
+  font name: <input type="text" id="fontname" value="Segoe UI"><br>
+  height: <input type="text" id="fontheight" value="14">px<br>
+  generate characters: <input type="text" id="characters" value="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,?0123456789 ~`!@#$%^&amp;*()-_+=\|[]{}&quot;':;<>/"><br>
+  bits per pixel: <input type="text" id="bitsperpixel" value="3"><br>
+  <button onclick="generate();">Generate</button><br>
+  <textarea rows=10 cols=100 id="result"></textarea>
+  <!-- canvas style="width:500px; height: 500px;" id="canvas"></canvas><br -->
+  <canvas id="canvas"></canvas><br>
+</body>
+</html>
